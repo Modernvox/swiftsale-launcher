@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SwiftSale Live Bin Display</title>
+  <style>
+    body { font-family: sans-serif; padding: 1rem; background: #f9f9f9; }
+    h1 { color: #333; }
+    #data { font-size: 1.5rem; color: #2c3e50; }
+  </style>
+</head>
+<body>
+  <h1>Latest Bin Assignment</h1>
+  <p id="data">Waiting for bidder...</p>
+
+  <script src="https://cdn.jsdelivr.net/npm/socket.io@4/dist/socket.io.min.js"></script>
+  <script>
+    const socket = io();
+    socket.on('connect', () =>
+      console.log('Connected to WebSocket server')
+    );
+    socket.on('update', msg => {
+      document.getElementById('data').innerText = msg.data;
+    });
+    socket.on('connect_error', () => {
+      document.getElementById('data').innerText = 'Connection failed. Retrying…';
+    });
+  </script>
+</body>
+</html>

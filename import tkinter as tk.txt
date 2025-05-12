@@ -1,0 +1,415 @@
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+class WhatnotGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Whatnot Live Show Manager")
+        self.root.geometry("800x500")
+
+        # Dictionary to store bidder data: {username: {"bin": bin_number, "qty": total_qty, "weight": weight_class, "giveaway": bool, "giveaway_num": int}}
+        self.bidders = {}
+        self.next_bin = 1  # Start assigning bins from 1
+        self.next_giveaway_num = 1  # Start assigning giveaway numbers from 1
+
+        # GUI Elements
+        # Search Section
+        tk.Label(root, text="Search:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.search_entry = tk.Entry(root)
+        self.search_entry.grid(row=0, column=1, padx=5, pady=5)
+        tk.Button(root, text="Search", command=self.search_bidders).grid(row=0, column=2, padx=5, pady=5)
+
+        # Search Result Label
+        self.search_result = tk.Label(root, text="", wraplength=600)
+        self.search_result.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
+
+        # Input Fields
+        # Username
+        tk.Label(root, text="Username:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.username_entry = tk.Entry(root)
+        self.username_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        # Quantity
+        tk.Label(root, text="Quantity:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.qty_entry = tk.Entry(root)
+        self.qty_entry.insert(0, "1")  # Default to 1
+        self.qty_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        # Weight Class
+        tk.Label(root, text="Weight Class:").grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        self.weight_entry = tk.Entry(root)
+        self.weight_entry.grid(row=4, column=1, padx=5, pady=5)
+
+        # Giveaway Checkbox
+        self.giveaway_var = tk.BooleanVar()
+        tk.Checkbutton(root, text="Giveaway", variable=self.giveaway_var).grid(row=5, column=1, padx=5, pady=5, sticky="w")
+
+        # Add Bidder Button
+        tk.Button(root, text="Add/Update Bidder", command=self.add_bidder).grid(row=6, column=0, columnspan=2, pady=10)
+
+        # Print Button
+        tk.Button(root, text="Print All Bidders", command=self.print_bidders).grid(row=7, column=0, columnspan=2, pady=10)
+
+        # Clear Button
+        tk.Button(root, text="Clear All Data", command=self.clear_data).grid(row=8, column=0, columnspan=2, pady=10)
+
+        # Treeview for displaying bidders
+        self.tree = ttk.Treeview(
+            root,
+            columns=("Username", "Bin", "Qty", "Weight", "Giveaway", "GiveawayNum"),
+            show="headings"
+        )
+        self.tree.heading("Username", text="Username", command=lambda: self.sort_treeview("Username"))
+        self.tree.heading("Bin", text="Bin Number", command=lambda: self.sort_treeview("Bin"))
+        self.tree.heading("Qty", text="Quantity", command=lambda: self.sort_treeview("Qty"))
+        self.tree.heading("Weight", text="Weight Class", command=lambda: self.sort_treeview("Weight"))
+        self.tree.heading("Giveaway", text="Giveaway", command=lambda: self.sort_treeview("Giveaway"))
+        self.tree.heading("GiveawayNum", text="Giveaway #", command=lambda: self.sort_treeview("GiveawayNum"))
+        self.tree.column("Username", width=150)
+        self.tree.column("Bin", width=80)
+        self.tree.column("Qty", width=80)
+        self.tree.column("Weight", width=120)
+        self.tree.column("Giveaway", width=80)
+        self.tree.column("GiveawayNum", width=100)
+        self.tree.grid(row=9, column=0, columnspan=4, padx=5, pady=5, sticky="nsew")
+
+        # Scrollbar for Treeview
+        scrollbar = ttk.Scrollbar(root, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=9, column=4, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        # Configure grid weights
+        root.grid_columnconfigure(1, weight=1)
+        root.grid_rowconfigure(9, weight=1)
+
+    def add_bidder(self):
+        username = self.username_entry.get().strip()
+        qty_str = self.qty_entry.get().strip()
+        weight = self.weight_entry.get().strip()
+        is_giveaway = self.giveaway_var.get()
+
+        if not username:
+            messagebox.showerror("Error", "Username cannot be empty!")
+            return
+
+        try:
+            qty = int(qty_str) if qty_str else 1
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid quantity (positive integer)!")
+            return
+
+        if username in self.bidders:
+            # Update existing bidder
+            self.bidders[username]["qty"] += qty
+            if weight:
+                self.bidders[username]["weight"] = weight
+            if is_giveaway and not self.bidders[username]["giveaway"]:
+                self.bidders[username]["giveaway"] = True
+                self.bidders[username]["giveaway_num"] = self.next_giveaway_num
+                self.next_giveaway_num += 1
+        else:
+            # Add new bidder
+            if self.next_bin > 100:
+                messagebox.showerror("Error", "No more bins available (1-100)!")
+                return
+            self.bidders[username] = {
+                "bin": self.next_bin,
+                "qty": qty,
+                "weight": weight,
+                "giveaway": is_giveaway,
+                "giveaway_num": self.next_giveaway_num if is_giveaway else 0
+            }
+            self.next_bin += 1
+            if is_giveaway:
+                self.next_giveaway_num += 1
+
+        # Update Treeview
+        self.update_treeview()
+
+        # Clear entries
+        self.username_entry.delete(0, tk.END)
+        self.qty_entry.delete(0, tk.END)
+        self.qty_entry.insert(0, "1")
+        self.weight_entry.delete(0, tk.END)
+        self.giveaway_var.set(False)
+
+    def update_treeview(self):
+        # Clear existing Treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Populate Treeview with bidder data
+        for username, data in self.bidders.items():
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    username,
+                    data["bin"],
+                    data["qty"],
+                    data["weight"],
+                    "Yes" if data["giveaway"] else "No",
+                    data["giveaway_num"] if data["giveaway"] else ""
+                )
+            )
+
+    def search_bidders(self):
+        query = self.search_entry.get().strip().lower()
+        if not query:
+            self.search_result.config(text="Please enter a search query!")
+            return
+
+        results = []
+        for username, data in self.bidders.items():
+            if (
+                query in username.lower() or
+                query == str(data["qty"]).lower() or
+                query in data["weight"].lower() or
+                (query in ("yes", "true", "giveaway") and data["giveaway"]) or
+                (query in ("no", "false") and not data["giveaway"]) or
+                (data["giveaway"] and query == str(data["giveaway_num"]))
+            ):
+                results.append(
+                    f"Username: {username}, Bin: {data['bin']}, Qty: {data['qty']}, "
+                    f"Weight: {data['weight']}, Giveaway: {'Yes' if data['giveaway'] else 'No'}, "
+                    f"Giveaway #: {data['giveaway_num'] if data['giveaway'] else 'N/A'}"
+                )
+
+        if results:
+            self.search_result.config(text="\n".join(results))
+        else:
+            self.search_result.config(text="No matches found!")
+
+    def print_bidders(self):
+        if not self.bidders:
+            print("No bidders to display.")
+            return
+        print("\nAll Bidders:")
+        for username, data in self.bidders.items():
+            print(
+                f"Username: {username}, Bin: {data['bin']}, Qty: {data['qty']}, "
+                f"Weight: {data['weight']}, Giveaway: {'Yes' if data['giveaway'] else 'No'}, "
+                f"Giveaway #: {data['giveaway_num'] if data['giveaway'] else 'N/A'}"
+            )
+
+    def sort_treeview(self, col):
+        # Sort Treeview by the clicked column
+        items = [(self.tree.set(item, col), item) for item in self.tree.get_children()]
+        # Handle numeric columns
+        if col in ("Bin", "Qty", "GiveawayNum"):
+            items.sort(key=lambda x: int(x[0]) if x[0] else 0)
+        elif col == "Giveaway":
+            items.sort(key=lambda x: x[ giveaway_num = 1  # Start assigning giveaway numbers from 1
+
+        # GUI Elements
+        # Search Section
+        tk.Label(root, text="Search:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.search_entry = tk.Entry(root)
+        self.search_entry.grid(row=0, column=1, padx=5, pady=5)
+        tk.Button(root, text="Search", command=self.search_bidders).grid(row=0, column=2, padx=5, pady=5)
+
+        # Search Result Label
+        self.search_result = tk.Label(root, text="", wraplength=600)
+        self.search_result.grid(row=1, column=0, columnspan=4, padx=5, pady=5)
+
+        # Input Fields
+        # Username
+        tk.Label(root, text="Username:").grid(row=2, column=0, padx=5, pady=5, sticky="e")
+        self.username_entry = tk.Entry(root)
+        self.username_entry.grid(row=2, column=1, padx=5, pady=5)
+
+        # Quantity
+        tk.Label(root, text="Quantity:").grid(row=3, column=0, padx=5, pady=5, sticky="e")
+        self.qty_entry = tk.Entry(root)
+        self.qty_entry.insert(0, "1")  # Default to 1
+        self.qty_entry.grid(row=3, column=1, padx=5, pady=5)
+
+        # Weight Class
+        tk.Label(root, text="Weight Class:").grid(row=4, column=0, padx=5, pady=5, sticky="e")
+        self.weight_entry = tk.Entry(root)
+        self.weight_entry.grid(row=4, column=1, padx=5, pady=5)
+
+        # Giveaway Checkbox
+        self.giveaway_var = tk.BooleanVar()
+        tk.Checkbutton(root, text="Giveaway", variable=self.giveaway_var).grid(row=5, column=1, padx=5, pady=5, sticky="w")
+
+        # Add Bidder Button
+        tk.Button(root, text="Add/Update Bidder", command=self.add_bidder).grid(row=6, column=0, columnspan=2, pady=10)
+
+        # Print Button
+        tk.Button(root, text="Print All Bidders", command=self.print_bidders).grid(row=7, column=0, columnspan=2, pady=10)
+
+        # Clear Button
+        tk.Button(root, text="Clear All Data", command=self.clear_data).grid(row=8, column=0, columnspan=2, pady=10)
+
+        # Treeview for displaying bidders
+        self.tree = ttk.Treeview(
+            root,
+            columns=("Username", "Bin", "Qty", "Weight", "Giveaway", "GiveawayNum"),
+            show="headings"
+        )
+        self.tree.heading("Username", text="Username", command=lambda: self.sort_treeview("Username"))
+        self.tree.heading("Bin", text="Bin Number", command=lambda: self.sort_treeview("Bin"))
+        self.tree.heading("Qty", text="Quantity", command=lambda: self.sort_treeview("Qty"))
+        self.tree.heading("Weight", text="Weight Class", command=lambda: self.sort_treeview("Weight"))
+        self.tree.heading("Giveaway", text="Giveaway", command=lambda: self.sort_treeview("Giveaway"))
+        self.tree.heading("GiveawayNum", text="Giveaway #", command=lambda: self.sort_treeview("GiveawayNum"))
+        self.tree.column("Username", width=150)
+        self.tree.column("Bin", width=80)
+        self.tree.column("Qty", width=80)
+        self.tree.column("Weight", width=120)
+        self.tree.column("Giveaway", width=80)
+        self.tree.column("GiveawayNum", width=100)
+        self.tree.grid(row=9, column=0, columnspan=4, padx=5, pady=5, sticky="nsew")
+
+        # Scrollbar for Treeview
+        scrollbar = ttk.Scrollbar(root, orient="vertical", command=self.tree.yview)
+        scrollbar.grid(row=9, column=4, sticky="ns")
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        # Configure grid weights
+        root.grid_columnconfigure(1, weight=1)
+        root.grid_rowconfigure(9, weight=1)
+
+    def add_bidder(self):
+        username = self.username_entry.get().strip()
+        qty_str = self.qty_entry.get().strip()
+        weight = self.weight_entry.get().strip()
+        is_giveaway = self.giveaway_var.get()
+
+        if not username:
+            messagebox.showerror("Error", "Username cannot be empty!")
+            return
+
+        try:
+            qty = int(qty_str) if qty_str else 1
+            if qty < 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid quantity (positive integer)!")
+            return
+
+        if username in self.bidders:
+            # Update existing bidder
+            self.bidders[username]["qty"] += qty
+            if weight:
+                self.bidders[username]["weight"] = weight
+            if is_giveaway and not self.bidders[username]["giveaway"]:
+                self.bidders[username]["giveaway"] = True
+                self.bidders[username]["giveaway_num"] = self.next_giveaway_num
+                self.next_giveaway_num += 1
+        else:
+            # Add new bidder
+            if self.next_bin > 100:
+                messagebox.showerror("Error", "No more bins available (1-100)!")
+                return
+            self.bidders[username] = {
+                "bin": self.next_bin,
+                "qty": qty,
+                "weight": weight,
+                "giveaway": is_giveaway,
+                "giveaway_num": self.next_giveaway_num if is_giveaway else 0
+            }
+            self.next_bin += 1
+            if is_giveaway:
+                self.next_giveaway_num += 1
+
+        # Update Treeview
+        self.update_treeview()
+
+        # Clear entries
+        self.username_entry.delete(0, tk.END)
+        self.qty_entry.delete(0, tk.END)
+        self.qty_entry.insert(0, "1")
+        self.weight_entry.delete(0, tk.END)
+        self.giveaway_var.set(False)
+
+    def update_treeview(self):
+        # Clear existing Treeview
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        # Populate Treeview with bidder data
+        for username, data in self.bidders.items():
+            self.tree.insert(
+                "",
+                tk.END,
+                values=(
+                    username,
+                    data["bin"],
+                    data["qty"],
+                    data["weight"],
+                    "Yes" if data["giveaway"] else "No",
+                    data["giveaway_num"] if data["giveaway"] else ""
+                )
+            )
+
+    def search_bidders(self):
+        query = self.search_entry.get().strip().lower()
+        if not query:
+            self.search_result.config(text="Please enter a search query!")
+            return
+
+        results = []
+        for username, data in self.bidders.items():
+            if (
+                query in username.lower() or
+                query == str(data["qty"]).lower() or
+                query in data["weight"].lower() or
+                (query in ("yes", "true", "giveaway") and data["giveaway"]) or
+                (query in ("no", "false") and not data["giveaway"]) or
+                (data["giveaway"] and query == str(data["giveaway_num"]))
+            ):
+                results.append(
+                    f"Username: {username}, Bin: {data['bin']}, Qty: {data['qty']}, "
+                    f"Weight: {data['weight']}, Giveaway: {'Yes' if data['giveaway'] else 'No'}, "
+                    f"Giveaway #: {data['giveaway_num'] if data['giveaway'] else 'N/A'}"
+                )
+
+        if results:
+            self.search_result.config(text="\n".join(results))
+        else:
+            self.search_result.config(text="No matches found!")
+
+    def print_bidders(self):
+        if not self.bidders:
+            print("No bidders to display.")
+            return
+        print("\nAll Bidders:")
+        for username, data in self.bidders.items():
+            print(
+                f"Username: {username}, Bin: {data['bin']}, Qty: {data['qty']}, "
+                f"Weight: {data['weight']}, Giveaway: {'Yes' if data['giveaway'] else 'No'}, "
+                f"Giveaway #: {data['giveaway_num'] if data['giveaway'] else 'N/A'}"
+            )
+
+    def sort_treeview(self, col):
+        # Sort Treeview by the clicked column
+        items = [(self.tree.set(item, col), item) for item in self.tree.get_children()]
+        # Handle numeric columns
+        if col in ("Bin", "Qty", "GiveawayNum"):
+            items.sort(key=lambda x: int(x[0]) if x[0] else 0)
+        elif col == "Giveaway":
+            items.sort(key=lambda x: x[0] == "Yes", reverse=True)
+        else:
+            items.sort()
+        
+        # Rearrange items in Treeview
+        for index, (value, item) in enumerate(items):
+            self.tree.move(item, "", index)
+
+    def clear_data(self):
+        if messagebox.askyesno("Confirm", "Are you sure you want to clear all data?"):
+            self.bidders.clear()
+            self.next_bin = 1
+            self.next_giveaway_num = 1
+            self.update_treeview()
+            self.search_result.config(text="")
+            self.search_entry.delete(0, tk.END)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = WhatnotGUI(root)
+    root.mainloop()

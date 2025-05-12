@@ -1,0 +1,29 @@
+SwiftSale™ Demo License Agreement
+Last Updated: May 1, 2025
+This License Agreement ("Agreement") is a legal contract between you ("User") and Mike St Pierre ("Licensor"), the owner of the SwiftSale™ App trademark, for the use of the SwiftSale™ Demo software ("Software"). By installing, copying, or using the Software, you agree to be bound by the terms of this Agreement. If you do not agree, do not install or use the Software.
+1. License Grant
+Licensor grants you a non-exclusive, non-transferable, revocable license to use the Software for personal or internal business purposes in demo mode, subject to the terms of this Agreement. The Software is provided "as-is" for evaluation and testing purposes only.
+2. Restrictions
+You may not:
+Modify, reverse-engineer, decompile, or disassemble the Software.
+
+Distribute, sublicense, rent, lease, or sell the Software.
+
+Use the Software for commercial purposes beyond demo evaluation without a separate license.
+
+Remove or alter any copyright, trademark (including SwiftSale™ App), or proprietary notices in the Software.
+
+3. Ownership
+The Software and all associated intellectual property rights, including the SwiftSale™ App trademark, are owned by Mike St Pierre. This Agreement does not transfer any ownership rights to you.
+4. No Warranty
+The Software is provided "AS IS" without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or non-infringement. Licensor does not guarantee that the Software will meet your requirements or operate without errors.
+5. Limitation of Liability
+To the maximum extent permitted by law, Mike St Pierre shall not be liable for any direct, indirect, incidental, special, or consequential damages arising from the use or inability to use the Software, even if advised of the possibility of such damages.
+6. Termination
+This Agreement is effective until terminated. You may terminate it by uninstalling and destroying all copies of the Software. Licensor may terminate this Agreement if you breach its terms. Upon termination, you must cease all use of the Software and delete all copies.
+7. Governing Law
+This Agreement is governed by the laws of the State of [Insert Your State, e.g., California], United States, without regard to its conflict of law principles.
+8. Contact Information
+For questions about this Agreement, contact Mike St Pierre at [Insert Contact Email or Address, e.g., support@swiftsaleapp.com].
+By using the Software, you acknowledge that you have read, understood, and agree to be bound by this Agreement.
+

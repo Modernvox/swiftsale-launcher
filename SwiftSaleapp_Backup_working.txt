@@ -1,0 +1,1373 @@
+import tkinter as tk
+from tkinter import messagebox, ttk, filedialog
+from PIL import Image, ImageTk
+import os
+import sys
+import datetime
+import csv
+import hashlib
+from telegram import Bot
+import asyncio
+import configparser
+import warnings
+import logging
+import pyperclip
+from flask import Flask, render_template, jsonify
+from flask_socketio import SocketIO
+import threading
+import platform
+from dotenv import load_dotenv
+
+# Suppress urllib3 warning from python-telegram-bot
+warnings.filterwarnings("ignore", category=UserWarning, module="telegram")
+
+# Setup logging
+log_dir = os.path.join(os.path.expanduser("~"), "Documents", "SwiftSale")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "swiftsale.log")
+logging.basicConfig(
+    filename=log_file,
+    level=logging.DEBUG,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger()
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+console_handler.setFormatter(logging.Formatter(
+    "%(asctime)s - %(levelname)s - %(message)s"))
+logger.addHandler(console_handler)
+
+# Resource path helper for PyInstaller
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and PyInstaller."""
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        base_path = os.path.dirname(__file__)
+    return os.path.join(base_path, relative_path)
+
+# Load environment variables
+load_dotenv()
+
+# Asyncio loop for Telegram
+loop = None
+loop_thread = None
+
+def run_asyncio_loop():
+    """Run an asyncio event loop in a separate thread."""
+    global loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+loop_thread = threading.Thread(target=run_asyncio_loop, daemon=True)
+loop_thread.start()
+
+class SwiftSaleApp:
+    def __init__(self):
+        logging.info("Initializing SwiftSaleApp")
+        try:
+            self.flask_app = Flask(__name__)
+            self.socketio = SocketIO(self.flask_app, async_mode="threading")
+            logging.info("Flask-SocketIO initialized with async_mode=threading")
+        except Exception as exc:
+            logging.error(f"SocketIO initialization failed: {str(exc)}")
+            raise
+
+class SCDWhatnotGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("SwiftSale™ – Powering Whatnot Auctions with Precision")
+        self.root.geometry("1000x700")
+        self.root.configure(bg="#2E2E2E")  # Dark gray background
+
+        try:
+            self.telegram_error_shown = False
+            self.bidders = {}
+            self.next_bin = 1
+            self.next_giveaway_num = 1
+            self.giveaway_count = 0
+            self.last_bidder = None
+            self.show_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.show_start_time = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+            self.bidder_csv_path = os.path.join(log_dir, f"bidder_history_{self.show_id}.csv")
+            self.sort_order = 'desc'  # Default to descending (newest first)
+
+            # Tier system configuration
+            self.tier_limits = {
+                "Trial": {"bins": 150},
+                "Bronze": {"bins": 50},
+                "Silver": {"bins": 150},
+                "Gold": {"bins": 300}
+            }
+            self.valid_tiers = list(self.tier_limits.keys())
+
+            # Load configuration
+            self.config = configparser.ConfigParser()
+            self.config_path = get_resource_path("config.ini")
+            if not os.path.exists(self.config_path):
+                self.config['Telegram'] = {'bot_token': '', 'chat_id': ''}
+                self.config['Subscription'] = {'tier': 'Trial', 'license_key': ''}
+                self.config['GUI'] = {
+                    'top_buyer_text': 'Great job, {username}! You’ve snagged {count} items!',
+                    'giveaway_announcement_text': 'Giveaway #{number} Alert! Must be following us & share the stream to enter! Winner announced in a few minutes!',
+                    'flash_sale_announcement_text': '🚨 Flash Sale Alert! Grab these deals before the timer runs out! 🚨'
+                }
+                with open(self.config_path, 'w') as configfile:
+                    self.config.write(configfile)
+            self.config.read(self.config_path)
+
+            # Ensure sections exist in config
+            for section in ['Telegram', 'Subscription', 'GUI']:
+                if section not in self.config:
+                    self.config[section] = {}
+                    if section == 'Telegram':
+                        self.config[section]['bot_token'] = ''
+                        self.config[section]['chat_id'] = ''
+                    elif section == 'Subscription':
+                        self.config[section]['tier'] = 'Trial'
+                        self.config[section]['license_key'] = ''
+                    elif section == 'GUI':
+                        self.config[section]['top_buyer_text'] = 'Great job, {username}! You’ve snagged {count} items!'
+                        self.config[section]['giveaway_announcement_text'] = 'Giveaway #{number} Alert! Must be following us & share the stream to enter! Winner announced in a few minutes!'
+                        self.config[section]['flash_sale_announcement_text'] = '🚨 Flash Sale Alert! Grab these deals before the timer runs out! 🚨'
+                    with open(self.config_path, 'w') as configfile:
+                        self.config.write(configfile)
+
+            # Load configuration values
+            self.bot_token = self.config['Telegram'].get('bot_token', '')
+            self.chat_id = self.config['Telegram'].get('chat_id', '')
+            self.tier = self.config['Subscription'].get('tier', 'Trial')
+            self.license_key = self.config['Subscription'].get('license_key', '')
+            self.top_buyer_text = self.config['GUI'].get(
+                'top_buyer_text', 'Great job, {username}! You’ve snagged {count} items!')
+            self.giveaway_announcement_text = self.config['GUI'].get(
+                'giveaway_announcement_text',
+                'Giveaway #{number} Alert! Must be following us & share the stream to enter! Winner announced in a few minutes!')
+            self.flash_sale_announcement_text = self.config['GUI'].get(
+                'flash_sale_announcement_text',
+                '🚨 Flash Sale Alert! Grab these deals before the timer runs out! 🚨')
+
+            # Validate license key and tier
+            if self.tier == 'Trial' and not self.license_key:
+                pass
+            elif not self.validate_license_key(self.license_key, self.tier):
+                self.tier = 'Trial'
+                self.license_key = ''
+                self.config['Subscription']['tier'] = self.tier
+                self.config['Subscription']['license_key'] = self.license_key
+                with open(self.config_path, 'w') as configfile:
+                    self.config.write(configfile)
+            self.max_bins = self.tier_limits[self.tier]['bins']
+
+            # Initialize Telegram bot
+            if not self.bot_token:
+                logging.warning("Telegram bot token missing in config.ini")
+                self.bot = None
+            else:
+                try:
+                    self.bot = Bot(token=self.bot_token)
+                    logging.info("Telegram bot initialized")
+                except Exception as e:
+                    logging.error(f"Telegram bot initialization failed: {str(e)}")
+                    self.bot = None
+                    self.telegram_error_shown = True
+                    messagebox.showerror(
+                        "Telegram Error",
+                        f"Failed to initialize Telegram bot: {str(e)}. Set a valid bot token in Settings."
+                    )
+
+            # Initialize Flask and SocketIO
+            self.flask_app = Flask(__name__)
+            self.socketio = SocketIO(self.flask_app)
+            self.latest_bin_assignment = "Waiting for bidder..."
+
+            @self.flask_app.route('/')
+            def index():
+                return render_template('index.html')
+
+            @self.flask_app.route('/get_latest')
+            def get_latest():
+                return jsonify({'data': self.latest_bin_assignment})
+
+            @self.socketio.on('connect')
+            def handle_connect():
+                self.socketio.emit('update', {'data': self.latest_bin_assignment})
+                logging.info("Flask client connected")
+
+            def run_flask():
+                try:
+                    port = int(os.environ.get('PORT', 5000))
+                    self.socketio.run(
+                        self.flask_app,
+                        host='0.0.0.0',
+                        port=port,
+                        allow_unsafe_werkzeug=True)
+                    logging.info(f"Flask server started on port {port}")
+                except Exception as e:
+                    logging.error(f"Flask server failed: {str(e)}")
+                    self.root.after(
+                        0, lambda: messagebox.showerror(
+                            "Flask Error", f"Flask server failed: {str(e)}"))
+
+            flask_thread = threading.Thread(target=run_flask, daemon=True)
+            flask_thread.start()
+
+            # Updated field_info
+            self.field_info = {
+                "search": "Search for bidder by username or partial matches for transactions.",
+                "username": "Enter Whatnot username to assign bin number. Click field to auto-paste copied username.",
+                "quantity": "Number of items won (default: 1).",
+                "weight_class": "Select weight class or 'PU Only' (optional).",
+                "giveaway": "Mark as giveaway to assign unique number.",
+                "avg_sell_rate": "Calculate average time between item sales and estimated totals for 2-hour and 3-hour shows. Click displayed rate to copy for chat.",
+                "settings": "Opens the Settings window to customize subscription tier, top buyer text, giveaway announcement text, and flash sale announcement text.",
+                "start_giveaway": "Copies a giveaway announcement to the clipboard for pasting into Whatnot chat. Includes an auto-incrementing giveaway number. Text is customizable in Settings.",
+                "start_flash_sale": "Copies a flash sale announcement to the clipboard for pasting into Whatnot chat to promote time-limited deals. Text is customizable in Settings.",
+                "top_buyers": "Shows the top 3 buyers with the most items won. Click a buyer’s name to copy a shoutout message for Whatnot chat.",
+                "add_bidder": "Assigns a bin number to the entered username and logs the transaction.",
+                "export_bidders": "Exports bidder data to a CSV file for record-keeping.",
+                "import_csv": "Imports bidder data from a previously exported CSV file to restore a past show.",
+                "clear_data": "Clears all data and starts a new show.",
+                "sort_order": "Sort bidder transactions by timestamp. 'Sort Asc' for oldest first, 'Sort Desc' for newest first."
+            }
+
+            # Configure styles
+            style = ttk.Style()
+            try:
+                style.theme_use('default')  # Safer theme
+                style.configure("Treeview", font=("Helvetica", 8), rowheight=20, background="#F5F5F5")
+                style.configure("Treeview.Heading", font=("Helvetica", 8, "bold"), background="#0288D1", foreground="#FFFFFF")
+                style.map("Treeview", background=[('selected', '#BBDEFB')])
+            except Exception as e:
+                logging.error(f"Style configuration failed: {str(e)}")
+                messagebox.showerror("Style Error", f"Failed to configure styles: {str(e)}")
+
+            # Main container
+            self.main_container = tk.Frame(root, bg="#FFFFFF")
+            self.main_container.grid(
+                row=1, column=0, columnspan=2, padx=10, pady=10, sticky="nsew")
+            self.main_container.grid_columnconfigure(0, weight=3)
+            self.main_container.grid_columnconfigure(1, weight=1)
+            self.main_container.grid_rowconfigure(0, weight=1)
+
+            # Header Frame
+            header = tk.Frame(root, bg="#212121")
+            header.grid(row=0, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+            logo_path = get_resource_path("swiftapplogo.png")
+            try:
+                logo_img = Image.open(logo_path).resize((160, 50), Image.Resampling.LANCZOS)
+                self.logo = ImageTk.PhotoImage(logo_img)
+                tk.Label(header, image=self.logo, bg="#212121").pack(side="left", padx=10)
+                tk.Label(
+                    header,
+                    text="– Powering Whatnot Auctions with Precision",
+                    font=("Helvetica", 12, "bold"),
+                    fg="#FFFFFF",
+                    bg="#212121").pack(side="left")
+            except Exception as e:
+                logging.warning(f"Failed to load logo: {str(e)}")
+                tk.Label(
+                    header,
+                    text="SwiftSale™",
+                    font=("Helvetica", 12, "bold"),
+                    fg="#FFFFFF",
+                    bg="#212121").pack(side="left", padx=10)
+            tk.Label(
+                header,
+                text=f"Show ID: {self.show_id} | Tier: {self.tier} (Max {self.max_bins} bins)",
+                font=("Helvetica", 8),
+                fg="#B0BEC5",
+                bg="#212121",
+                name="header_label").pack(side="right", padx=10)
+
+            # Main Frame (Left Column)
+            main = tk.Frame(self.main_container, bg="#FFFFFF")
+            main.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+            main.grid_columnconfigure(0, weight=1)
+            main.grid_rowconfigure(4, weight=1)
+
+            # Input Frame
+            input_frame = tk.Frame(main, bg="#FFFFFF")
+            input_frame.pack(fill="x", padx=5, pady=5)
+            input_frame.grid_columnconfigure(1, weight=1)
+
+            # Announcement Text Display
+            self.announcement_text = tk.Text(
+                input_frame, height=2, width=50, font=("Helvetica", 8), bg="#F5F5F5", state="disabled")
+            self.announcement_text.grid(row=0, column=0, columnspan=6, padx=5, pady=5)
+            self.current_bidder_label = tk.Label(
+                input_frame, text="", font=("Helvetica", 10, "bold"), bg="#FFFFFF", fg="#0288D1")
+            self.current_bidder_label.grid(row=0, column=6, padx=5, sticky="w")
+
+            # Search and Settings
+            tk.Label(input_frame, text="Search:", bg="#FFFFFF", font=("Helvetica", 8)).grid(
+                row=1, column=0, padx=5, sticky="e")
+            self.search_entry = tk.Entry(input_frame, width=15, font=("Helvetica", 8), bg="#F5F5F5")
+            self.search_entry.grid(row=1, column=1, padx=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("search"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=1, column=2)
+            tk.Button(
+                input_frame,
+                text="Search",
+                command=self.search_bidders,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=1, column=3, padx=5)
+            tk.Button(
+                input_frame,
+                text="Settings",
+                command=self.open_settings,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=1, column=4, padx=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("settings"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=1, column=5)
+
+            # Transaction Inputs
+            tk.Label(input_frame, text="Username:", bg="#FFFFFF", font=("Helvetica", 10, "bold")).grid(
+                row=2, column=0, padx=5, sticky="e")
+            self.username_entry = tk.Entry(
+                input_frame, width=20, font=("Helvetica", 12, "bold"), bg="#F5F5F5")
+            self.username_entry.grid(row=2, column=1, padx=5, pady=10, sticky="ew")
+            self.username_entry.bind('<Button-1>', lambda event: self.paste_to_entry(self.username_entry))
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("username"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=2, column=2, pady=10)
+            tk.Button(
+                input_frame,
+                text="Add Bidder",
+                command=self.add_bidder,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=2, column=3, padx=5, pady=10)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("add_bidder"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=2, column=4, pady=10)
+
+            tk.Label(input_frame, text="Quantity:", bg="#ffffff", font=("Helvetica", 8)).grid(
+                row=3, column=0, padx=5, sticky="e")
+            self.qty_entry = tk.Entry(input_frame, width=15, font=("Helvetica", 8), bg="#F5F5F5")
+            self.qty_entry.insert(0, "1")
+            self.qty_entry.grid(row=3, column=1, padx=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("quantity"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=3, column=2)
+
+            tk.Label(input_frame, text="Weight:", bg="#FFFFFF", font=("Helvetica", 8)).grid(
+                row=3, column=3, padx=5, sticky="e")
+            self.weight_entry = ttk.Combobox(
+                input_frame,
+                values=["A", "B", "C", "D", "E", "F", "G", "H", "PU Only"],
+                width=10,
+                state="readonly",
+                font=("Helvetica", 8))
+            self.weight_entry.grid(row=3, column=4, padx=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("weight_class"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=3, column=5)
+
+            self.giveaway_var = tk.BooleanVar()
+            tk.Checkbutton(
+                input_frame,
+                text="Giveaway",
+                variable=self.giveaway_var,
+                bg="#FFFFFF",
+                font=("Helvetica", 8)).grid(row=4, column=1, padx=5, sticky="w")
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("giveaway"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=4, column=2)
+
+            # Additional Buttons
+            tk.Button(
+                input_frame,
+                text="Avg Sell Rate",
+                command=lambda: self.show_avg_sell_rate(show_message=True),
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=5, column=0, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("avg_sell_rate"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=5, column=1, pady=5)
+            tk.Button(
+                input_frame,
+                text="Start Giveaway",
+                command=self.copy_giveaway_announcement,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=5, column=2, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("start_giveaway"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=5, column=3, pady=5)
+            tk.Button(
+                input_frame,
+                text="Start Flash Sale",
+                command=self.copy_flash_sale_announcement,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=5, column=4, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("start_flash_sale"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=5, column=5, pady=5)
+
+            tk.Button(
+                input_frame,
+                text="Sort Asc",
+                command=lambda: self.set_sort_order('asc'),
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=6, column=0, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="Sort Desc",
+                command=lambda: self.set_sort_order('desc'),
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=6, column=1, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("sort_order"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=6, column=2, pady=5)
+
+            # Data Management Buttons
+            tk.Button(
+                input_frame,
+                text="Export Bidders",
+                command=self.print_bidders,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=7, column=0, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("export_bidders"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=7, column=1, pady=5)
+            tk.Button(
+                input_frame,
+                text="Import CSV",
+                command=self.import_csv,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=7, column=2, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("import_csv"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=7, column=3, pady=5)
+            tk.Button(
+                input_frame,
+                text="Clear Data",
+                command=self.clear_data,
+                bg="#0288D1",
+                fg="#FFFFFF",
+                font=("Helvetica", 8),
+                width=12).grid(row=7, column=4, padx=5, pady=5)
+            tk.Button(
+                input_frame,
+                text="?",
+                command=lambda: self.show_field_info("clear_data"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").grid(row=7, column=5, pady=5)
+
+            # Search Result
+            self.search_result = tk.Label(
+                main, text="", wraplength=500, bg="#FFFFFF", font=("Helvetica", 8))
+            self.search_result.pack(pady=5)
+
+            # Treeview
+            self.tree = ttk.Treeview(
+                main,
+                columns=("Username", "Bin", "Qty", "Weight", "Giveaway", "GiveawayNum", "Timestamp"),
+                show="tree headings",
+                height=8)
+            self.tree.heading("#0", text="")
+            self.tree.column("#0", width=20)
+            for col in ("Username", "Bin", "Qty", "Weight", "Giveaway", "GiveawayNum", "Timestamp"):
+                self.tree.heading(col, text=col)
+                self.tree.column(col, width=80 if col != "Timestamp" else 120)
+            self.tree.pack(fill="both", expand=True, padx=5, pady=5)
+            scrollbar = ttk.Scrollbar(main, orient="vertical", command=self.tree.yview)
+            scrollbar.pack(side="right", fill="y")
+            self.tree.configure(yscrollcommand=scrollbar.set)
+
+            # Bin Display
+            tk.Label(main, text="Assigned Bins:", font=("Helvetica", 10, "bold"), bg="#FFFFFF", fg="#0288D1").pack(
+                anchor="w", padx=5)
+            self.bin_display = tk.Text(main, height=4, width=60, font=("Helvetica", 10), bg="#F5F5F5")
+            self.bin_display.pack(fill="x", padx=5, pady=5)
+            self.bin_display.config(state="disabled")
+
+            # Right Column (Top Buyers and Stats)
+            top_buyers_frame = tk.Frame(self.main_container, bg="#FFFFFF")
+            top_buyers_frame.grid(row=0, column=1, padx=10, pady=10, sticky="nsew")
+            top_buyers_header = tk.Frame(top_buyers_frame, bg="#FFFFFF")
+            top_buyers_header.pack(fill="x")
+            tk.Label(
+                top_buyers_header,
+                text="Top Buyers",
+                font=("Helvetica", 10, "bold"),
+                bg="#FFFFFF",
+                fg="#0288D1").pack(side="left", padx=5, pady=5)
+            tk.Button(
+                top_buyers_header,
+                text="?",
+                command=lambda: self.show_field_info("top_buyers"),
+                width=2,
+                font=("Helvetica", 8),
+                bg="#B0BEC5",
+                fg="#FFFFFF").pack(side="right", padx=5)
+            self.top_buyers_labels = []
+            for i in range(3):
+                label = tk.Label(
+                    top_buyers_frame,
+                    text="",
+                    font=("Helvetica", 8),
+                    bg="#FFFFFF",
+                    wraplength=200,
+                    cursor="hand2")
+                label.pack(anchor="w", padx=5, pady=2)
+                label.bind("<Button-1>", lambda e, idx=i: self.copy_top_buyer_text(idx))
+                self.top_buyers_labels.append(label)
+
+            stats_frame = tk.Frame(top_buyers_frame, bg="#FFFFFF")
+            stats_frame.pack(fill="x", padx=5, pady=5)
+            self.stats_text = tk.Text(
+                stats_frame, height=1, width=40, font=("Helvetica", 8), bg="#F5F5F5", cursor="hand2")
+            self.stats_text.pack(pady=2)
+            self.stats_text.insert(tk.END, "No stats yet")
+            self.stats_text.config(state="disabled")
+            self.stats_text.bind("<Button-1>", lambda e: self.copy_stats_text())
+            self.sell_rate_text = tk.Text(
+                stats_frame, height=3, width=40, font=("Helvetica", 8), bg="#F5F5F5", cursor="hand2")
+            self.sell_rate_text.pack(pady=2)
+            self.sell_rate_text.insert(tk.END, "No sell rate yet")
+            self.sell_rate_text.config(state="disabled")
+            self.sell_rate_text.bind("<Button-1>", lambda e: self.copy_sell_rate_text())
+
+            # Footer
+            footer = tk.Frame(root, bg="#212121")
+            footer.grid(row=2, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+            tk.Label(
+                footer,
+                text=f"License ID: SS-2025-001 | SwiftSale™ © 2025 | Bins: {len(self.bidders)}/{self.max_bins}",
+                font=("Helvetica", 8),
+                fg="#B0BEC5",
+                bg="#212121",
+                name="footer_label").pack(side="left", padx=10)
+
+            # Initialize UI updates
+            self.update_footer()
+            self.update_top_buyers()
+            self.update_stats()
+            self.show_avg_sell_rate(show_message=False)
+
+            # Grid weights
+            self.root.grid_columnconfigure(0, weight=1)
+            self.root.grid_rowconfigure(1, weight=1)
+            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+            logging.info("Application initialized")
+        except Exception as e:
+            logging.error(f"UI initialization failed: {str(e)}")
+            messagebox.showerror("Initialization Error", f"Failed to initialize UI: {str(e)}")
+            self.root.destroy()
+
+    def on_closing(self):
+        logging.info("Closing application")
+        global loop
+        if loop is not None:
+            loop.call_soon_threadsafe(loop.stop)
+            loop.run_until_complete(loop.shutdown_asyncgens())
+            loop.close()
+        self.root.destroy()
+
+    def paste_to_entry(self, entry):
+        try:
+            clipboard = self.root.clipboard_get()
+            cleaned_clipboard = clipboard.strip().strip('()')
+            current_content = entry.get().strip()
+            if cleaned_clipboard == current_content:
+                logging.info(
+                    f"Skipped pasting: Clipboard content '{cleaned_clipboard}' matches current field content")
+                return
+            entry.delete(0, tk.END)
+            entry.insert(0, cleaned_clipboard)
+            logging.info(
+                f"Pasted clipboard content into username field: raw='{clipboard}', cleaned='{cleaned_clipboard}'")
+        except tk.TclError:
+            logging.warning("Paste failed: Clipboard empty or inaccessible")
+
+    def validate_license_key(self, key, tier):
+        if not key or tier not in self.valid_tiers or tier == 'Trial':
+            return False
+        try:
+            parts = key.split('-')
+            if len(parts) != 3 or parts[0].lower() != tier.lower():
+                return False
+            tier_part, code1, code2 = parts
+            checksum = hashlib.sha256((tier_part + code1).encode()).hexdigest()[-4:].upper()
+            return checksum == code2
+        except BaseException:
+            return False
+
+    def show_field_info(self, field):
+        messagebox.showinfo(f"{field.replace('_', ' ').title()} Info", self.field_info[field])
+        logging.info(f"Displayed info for {field}")
+
+    def update_footer(self):
+        footer_text = f"License ID: SS-2025-001 | SwiftSale™ © 2025 | Bins: {len(self.bidders)}/{self.max_bins}"
+        try:
+            footer_label = self.root.nametowidget(".!frame3.footer_label")
+            footer_label.config(text=footer_text)
+        except KeyError:
+            logging.warning("Footer label not found")
+        self.root.update()
+
+    def open_settings(self):
+        win = tk.Toplevel(self.root)
+        win.title("Settings")
+        win.geometry("400x500")
+        win.configure(bg="#FFFFFF")
+
+        tk.Label(win, text="Telegram Chat ID:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        chat_id_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        chat_id_entry.insert(0, self.chat_id)
+        chat_id_entry.pack(pady=5)
+
+        tk.Label(win, text="Subscription Tier:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        tk.Label(
+            win,
+            text=f"Current: {self.tier} (Max {self.max_bins} bins)",
+            bg="#FFFFFF",
+            font=("Helvetica", 8)).pack(pady=5)
+        tier_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        tier_entry.insert(0, self.tier)
+        tier_entry.pack(pady=5)
+
+        tk.Label(win, text="License Key:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        license_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        license_entry.pack(pady=5)
+
+        tk.Label(win, text="Top Buyer Text:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        top_buyer_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        top_buyer_entry.insert(0, self.top_buyer_text)
+        self.top_buyer_text = top_buyer_entry.get().strip()
+        top_buyer_entry.pack(pady=5)
+        tk.Label(
+            win,
+            text="Use {username} and {count} for placeholders",
+            bg="#FFFFFF",
+            font=("Helvetica", 8),
+            fg="#555").pack()
+
+        tk.Label(win, text="Giveaway Announcement Text:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        giveaway_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        giveaway_entry.insert(0, self.giveaway_announcement_text)
+        giveaway_entry.pack(pady=5)
+        tk.Label(
+            win,
+            text="Use {number} for giveaway number",
+            bg="#FFFFFF",
+            font=("Helvetica", 8),
+            fg="#555").pack()
+
+        tk.Label(win, text="Flash Sale Announcement Text:", bg="#FFFFFF", font=("Helvetica", 8)).pack(pady=5)
+        flash_sale_entry = tk.Entry(win, width=40, font=("Helvetica", 8), bg="#F5F5F5")
+        flash_sale_entry.insert(0, self.flash_sale_announcement_text)
+        flash_sale_entry.pack(pady=5)
+
+        def validate_key():
+            key = license_entry.get().strip()
+            tier = tier_entry.get().strip()
+            if not key:
+                messagebox.showerror("Error", "License key required!")
+                logging.warning("Validate key: Empty license key")
+                return
+            if tier not in self.valid_tiers:
+                messagebox.showerror(
+                    "Error", f"Invalid tier! Choose from: {', '.join(self.valid_tiers)}")
+                logging.warning(f"Invalid tier entered: {tier}")
+                return
+            if self.validate_license_key(key, tier):
+                self.tier = tier
+                self.max_bins = self.tier_limits[tier]['bins']
+                self.license_key = key
+                self.config['Subscription']['tier'] = tier
+                self.config['Subscription']['license_key'] = key
+                with open(self.config_path, 'w') as f:
+                    self.config.write(f)
+                self.root.nametowidget(".!frame.!label3").config(
+                    text=f"Show ID: {self.show_id} | Tier: {self.tier} (Max {self.max_bins} bins)")
+                self.update_footer()
+                messagebox.showinfo("Success", f"License key validated! Tier set to {tier}.")
+                logging.info(f"License key validated: Tier set to {tier}")
+            else:
+                messagebox.showerror("Error", "Invalid license key!")
+                logging.warning("Validate key: Invalid license key")
+
+        def save():
+            self.chat_id = chat_id_entry.get().strip()
+            self.top_buyer_text = top_buyer_entry.get().strip()
+            self.giveaway_announcement_text = giveaway_entry.get().strip()
+            self.flash_sale_announcement_text = flash_sale_entry.get().strip()
+            if not self.chat_id:
+                messagebox.showerror("Error", "Chat ID required!")
+                logging.warning("Save settings: Empty chat ID")
+                return
+            self.config['Telegram']['chat_id'] = self.chat_id
+            self.config['GUI']['top_buyer_text'] = self.top_buyer_text
+            self.config['GUI']['giveaway_announcement_text'] = self.giveaway_announcement_text
+            self.config['GUI']['flash_sale_announcement_text'] = self.flash_sale_announcement_text
+            with open(self.config_path, 'w') as f:
+                self.config.write(f)
+            messagebox.showinfo("Success", "Settings saved!")
+            logging.info("Settings saved")
+            self.update_top_buyers()
+            win.destroy()
+
+        tk.Button(
+            win,
+            text="Validate Key",
+            command=validate_key,
+            bg="#0288D1",
+            fg="#FFFFFF",
+            font=("Helvetica", 8)).pack(pady=5)
+        tk.Button(
+            win,
+            text="Save Settings",
+            command=save,
+            bg="#0288D1",
+            fg="#FFFFFF",
+            font=("Helvetica", 8)).pack(pady=5)
+
+    def update_bin_display(self):
+        self.bin_display.config(state="normal")
+        self.bin_display.delete(1.0, tk.END)
+        if not self.bidders:
+            self.bin_display.insert(tk.END, "No bidders.")
+        else:
+            if self.last_bidder and self.last_bidder in self.bidders:
+                data = self.bidders[self.last_bidder]
+                display_username = data.get('original_username', self.last_bidder)
+                self.bin_display.insert(tk.END, f"Bin {data['bin']}: {display_username}\n")
+            remaining_bidders = [
+                (username, data) for username, data in self.bidders.items() if username != self.last_bidder]
+            sorted_bidders = sorted(remaining_bidders, key=lambda x: x[1]['bin'], reverse=True)
+            for username, data in sorted_bidders:
+                display_username = data.get('original_username', username)
+                self.bin_display.insert(tk.END, f"Bin {data['bin']}: {display_username}\n")
+        self.bin_display.config(state="disabled")
+        self.bin_display.tag_configure("latest", font=("Helvetica", 10, "bold"))
+        self.bin_display.see("1.0")
+        logging.info("Updated bin display")
+
+    async def send_bin_number(self, username, bin_number):
+        if not self.bot or not self.chat_id:
+            logging.warning("Send bin number: Bot or chat ID missing")
+            return
+        try:
+            await self.bot.send_message(chat_id=self.chat_id, text=f"Username: {username} | Bin: {bin_number}")
+            logging.info(f"Sent Telegram message: Username: {username} | Bin: {bin_number}")
+        except Exception as e:
+            logging.error(f"Telegram send failed: {str(e)}")
+            if not self.telegram_error_shown:
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Telegram Warning",
+                        f"Failed to send Telegram message: {str(e)}. Check bot token and Chat ID. Further errors will be logged."
+                    )
+                )
+                self.telegram_error_shown = True
+
+    def copy_sell_rate_text(self):
+        text = self.sell_rate_text.get("1.0", tk.END).strip()
+        pyperclip.copy(text)
+        messagebox.showinfo("Copied", f"Copied: {text}")
+        logging.info(f"Copied sell rate text: {text}")
+
+    def show_avg_sell_rate(self, show_message=True):
+        if not self.bidders:
+            sell_rate_text = "No transactions to analyze."
+            self.sell_rate_text.config(state="normal")
+            self.sell_rate_text.delete("1.0", tk.END)
+            self.sell_rate_text.insert(tk.END, sell_rate_text)
+            self.sell_rate_text.config(state="disabled")
+            if show_message:
+                messagebox.showinfo("Info", sell_rate_text)
+            logging.info("Avg sell rate: No transactions")
+            return
+
+        timestamps = []
+        for user, data in self.bidders.items():
+            for txn in data['transactions']:
+                try:
+                    ts = datetime.datetime.strptime(txn['timestamp'], "%Y-%m-%d %I:%M:%S %p")
+                    timestamps.append(ts)
+                except ValueError:
+                    logging.warning(f"Invalid timestamp in transaction for {user}: {txn['timestamp']}")
+                    continue
+
+        if len(timestamps) < 2:
+            sell_rate_text = "Need at least two transactions."
+            self.sell_rate_text.config(state="normal")
+            self.sell_rate_text.delete("1.0", tk.END)
+            self.sell_rate_text.insert(tk.END, sell_rate_text)
+            self.sell_rate_text.config(state="disabled")
+            if show_message:
+                messagebox.showinfo("Info", sell_rate_text)
+            logging.info("Avg sell rate: Insufficient transactions")
+            return
+
+        timestamps.sort()
+        time_diffs = [(timestamps[i + 1] - timestamps[i]).total_seconds()
+                      for i in range(len(timestamps) - 1)]
+        avg_seconds = sum(time_diffs) / len(time_diffs)
+        minutes, seconds = divmod(int(avg_seconds), 60)
+        time_str = f"{minutes} min {seconds} sec" if minutes > 0 else f"{seconds} sec"
+
+        two_hour_seconds = 2 * 3600
+        three_hour_seconds = 3 * 3600
+        est_two_hour = int(two_hour_seconds / avg_seconds) if avg_seconds > 0 else 0
+        est_three_hour = int(three_hour_seconds / avg_seconds) if avg_seconds > 0 else 0
+
+        sell_rate_text = (
+            f"SwiftSale™ Your sellers' current time per sale is {time_str}. "
+            f"At this sell rate you're expected to sell a total of {est_two_hour} items "
+            f"for a 2-hour show or {est_three_hour} items for a 3-hour show."
+        )
+        self.sell_rate_text.config(state="normal")
+        self.sell_rate_text.delete("1.0", tk.END)
+        self.sell_rate_text.insert(tk.END, sell_rate_text)
+        self.sell_rate_text.config(state="disabled")
+        if show_message:
+            messagebox.showinfo("Average Sell Rate", sell_rate_text)
+        logging.info(f"Avg sell rate calculated: {sell_rate_text}")
+
+    def copy_top_buyer_text(self, index):
+        if index < len(self.top_buyers):
+            username, count = self.top_buyers[index]
+            text = self.top_buyer_text.format(username=username, count=count)
+            pyperclip.copy(text)
+            messagebox.showinfo("Copied", f"Copied: {text}")
+            logging.info(f"Copied top buyer text: {text}")
+
+    def update_top_buyers(self):
+        self.top_buyers = sorted(
+            [(data.get('original_username', username), data['total_items'])
+             for username, data in self.bidders.items()],
+            key=lambda x: x[1], reverse=True)[:3]
+        for i, label in enumerate(self.top_buyers_labels):
+            if i < len(self.top_buyers):
+                username, count = self.top_buyers[i]
+                text = self.top_buyer_text.format(username=username, count=count)
+                label.config(text=f"{username}: {count} items\n{text}")
+            else:
+                label.config(text="")
+        logging.info("Updated top buyers display")
+
+    def copy_stats_text(self):
+        text = self.stats_text.get("1.0", tk.END).strip()
+        pyperclip.copy(text)
+        messagebox.showinfo("Copied", f"Copied: {text}")
+        logging.info(f"Copied stats text: {text}")
+
+    def update_stats(self):
+        total_items = sum(data['total_items'] for data in self.bidders.values())
+        unique_buyers = len(self.bidders)
+        avg_items = round(total_items / unique_buyers, 1) if unique_buyers > 0 else 0
+        stats_text = f"Sold {total_items} items to {unique_buyers} buyers, avg {avg_items} items each"
+        self.stats_text.config(state="normal")
+        self.stats_text.delete("1.0", tk.END)
+        self.stats_text.insert(tk.END, stats_text)
+        self.stats_text.config(state="disabled")
+        logging.info("Updated stats display")
+
+    def copy_giveaway_announcement(self):
+        text = self.giveaway_announcement_text.format(number=self.giveaway_count + 1)
+        pyperclip.copy(text)
+        self.announcement_text.config(state="normal")
+        self.announcement_text.delete("1.0", tk.END)
+        self.announcement_text.insert(tk.END, text)
+        self.announcement_text.config(state="disabled")
+        messagebox.showinfo("Copied", f"Copied: {text}")
+        logging.info(f"Copied giveaway announcement: {text}")
+
+    def copy_flash_sale_announcement(self):
+        text = self.flash_sale_announcement_text
+        pyperclip.copy(text)
+        self.announcement_text.config(state="normal")
+        self.announcement_text.delete("1.0", tk.END)
+        self.announcement_text.insert(tk.END, text)
+        self.announcement_text.config(state="disabled")
+        messagebox.showinfo("Copied", f"Copied: {text}")
+        logging.info(f"Copied flash sale announcement: {text}")
+
+    def add_bidder(self):
+        username = self.username_entry.get().strip().lower()
+        original_username = self.username_entry.get().strip()
+        qty_str = self.qty_entry.get().strip()
+        weight = self.weight_entry.get() or ""
+        is_giveaway = self.giveaway_var.get()
+
+        logging.info(
+            f"Attempting to add bidder: username='{username}', qty='{qty_str}', weight='{weight}', giveaway={is_giveaway}")
+
+        if not username:
+            messagebox.showerror("Error", "Username required!")
+            logging.warning("Add bidder: Username required")
+            self.current_bidder_label.config(text="Error: Username required")
+            return
+
+        try:
+            qty = int(qty_str) if qty_str else 1
+            if qty <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Error", "Invalid quantity!")
+            logging.warning(f"Add bidder: Invalid quantity '{qty_str}'")
+            self.current_bidder_label.config(text="Error: Invalid quantity")
+            return
+
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p")
+
+        if username in self.bidders:
+            logging.info(f"Updating existing bidder: {username}")
+            txn = {
+                'bin': self.bidders[username]['bin'],
+                'qty': qty,
+                'weight': weight,
+                'giveaway': is_giveaway,
+                'giveaway_num': self.next_giveaway_num if is_giveaway else 0,
+                'timestamp': timestamp
+            }
+            self.bidders[username]['transactions'].append(txn)
+            self.bidders[username]['total_items'] += qty
+            if is_giveaway:
+                self.next_giveaway_num += 1
+                self.giveaway_count += 1
+        else:
+            if self.next_bin > self.max_bins:
+                messagebox.showerror(
+                    "Error", f"Bin limit reached for {self.tier} tier ({self.max_bins} bins). Upgrade your subscription.")
+                logging.warning(f"Add bidder: Bin limit reached ({self.max_bins})")
+                self.current_bidder_label.config(
+                    text=f"Error: Bin limit ({self.max_bins}) reached")
+                return
+            logging.info(f"Adding new bidder: {username}, bin {self.next_bin}")
+            txn = {
+                'bin': self.next_bin,
+                'qty': qty,
+                'weight': weight,
+                'giveaway': is_giveaway,
+                'giveaway_num': self.next_giveaway_num if is_giveaway else 0,
+                'timestamp': timestamp
+            }
+            self.bidders[username] = {
+                'bin': self.next_bin,
+                'transactions': [txn],
+                'total_items': qty,
+                'original_username': original_username
+            }
+            self.next_bin += 1
+            if is_giveaway:
+                self.next_giveaway_num += 1
+                self.giveaway_count += 1
+
+        self.last_bidder = username
+        self.current_bidder_label.config(
+            text=f"Username: {original_username} | Bin: {txn['bin']}")
+        self.latest_bin_assignment = f"Username: {original_username} | Bin: {txn['bin']}"
+        self.socketio.emit('update', {'data': self.latest_bin_assignment})
+        if self.bot and self.chat_id:
+            asyncio.run_coroutine_threadsafe(
+                self.send_bin_number(original_username, txn['bin']),
+                loop
+            )
+        self.username_entry.delete(0, tk.END)
+        self.qty_entry.delete(0, tk.END)
+        self.qty_entry.insert(0, "1")
+        self.weight_entry.set("")
+        self.giveaway_var.set(False)
+        self.update_treeview()
+        self.update_bin_display()
+        self.update_top_buyers()
+        self.update_stats()
+        self.show_avg_sell_rate(show_message=False)
+        self.update_footer()
+        logging.info(
+            f"Added/updated bidder: {original_username}, Bin: {txn['bin']}, Total bins: {len(self.bidders)}")
+
+    def import_csv(self):
+        file_path = filedialog.askopenfilename(filetypes=[("CSV files", "*.csv")])
+        if not file_path:
+            logging.info("Import CSV: No file selected")
+            return
+        try:
+            self.bidders.clear()
+            self.next_bin = 1
+            self.next_giveaway_num = 1
+            self.giveaway_count = 0
+            self.last_bidder = None
+            with open(file_path, mode="r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                expected_columns = ["username", "bin", "qty", "weight", "giveaway", "giveaway_num", "timestamp"]
+                if not all(col in reader.fieldnames for col in expected_columns):
+                    messagebox.showerror(
+                        "Error", "Invalid CSV format. Expected columns: username, bin, qty, weight, giveaway, giveaway_num, timestamp")
+                    logging.error("Import CSV: Invalid CSV format")
+                    return
+                for row in reader:
+                    username = row["username"].strip().lower()
+                    original_username = row["username"].strip()
+                    try:
+                        bin_num = int(row["bin"])
+                        qty = int(row["qty"])
+                        giveaway_num = int(row["giveaway_num"]) if row["giveaway_num"] else 0
+                        is_giveaway = row["giveaway"].lower() in ("yes", "true", "1")
+                        datetime.datetime.strptime(row["timestamp"], "%Y-%m-%d %I:%M:%S %p")
+                    except ValueError as e:
+                        messagebox.showerror(
+                            "Error", f"Invalid data in row for username {original_username}: {str(e)}")
+                        logging.error(f"Import CSV: Invalid data in row for {original_username}: {str(e)}")
+                        return
+                    if bin_num >= self.next_bin:
+                        self.next_bin = bin_num + 1
+                    if is_giveaway and giveaway_num >= self.next_giveaway_num:
+                        self.next_giveaway_num = giveaway_num + 1
+                        self.giveaway_count += 1
+                    txn = {
+                        'bin': bin_num,
+                        'qty': qty,
+                        'weight': row["weight"],
+                        'giveaway': is_giveaway,
+                        'giveaway_num': giveaway_num,
+                        'timestamp': row["timestamp"]
+                    }
+                    if username in self.bidders:
+                        self.bidders[username]['transactions'].append(txn)
+                        self.bidders[username]['total_items'] += qty
+                    else:
+                        if bin_num > self.max_bins:
+                            messagebox.showerror(
+                                "Error", f"Bin {bin_num} exceeds limit for {self.tier} tier ({self.max_bins} bins).")
+                            logging.warning(f"Import CSV: Bin {bin_num} exceeds limit")
+                            self.bidders.clear()
+                            self.next_bin = 1
+                            self.next_giveaway_num = 1
+                            self.giveaway_count = 0
+                            return
+                        self.bidders[username] = {
+                            'bin': bin_num,
+                            'transactions': [txn],
+                            'total_items': qty,
+                            'original_username': original_username
+                        }
+            self.update_treeview()
+            self.update_bin_display()
+            self.update_top_buyers()
+            self.update_stats()
+            self.show_avg_sell_rate(show_message=False)
+            self.update_footer()
+            messagebox.showinfo(
+                "Success", f"Imported {len(self.bidders)} bidders from {file_path}")
+            logging.info(f"Imported {len(self.bidders)} bidders from {file_path}")
+        except Exception as e:
+            logging.error(f"Import CSV failed: {str(e)}")
+            messagebox.showerror("Error", f"Import failed: {str(e)}")
+            self.bidders.clear()
+            self.next_bin = 1
+            self.next_giveaway_num = 1
+            self.giveaway_count = 0
+            self.update_treeview()
+            self.update_bin_display()
+            self.update_top_buyers()
+            self.update_stats()
+            self.show_avg_sell_rate(show_message=False)
+            self.update_footer()
+
+    def clear_data(self):
+        if messagebox.askyesno("Confirm", "Start new show?"):
+            self.save_auction_history()
+            self.bidders.clear()
+            self.last_bidder = None
+            self.next_bin = 1
+            self.next_giveaway_num = 1
+            self.giveaway_count = 0
+            self.tree.delete(*self.tree.get_children())
+            self.search_result.config(text="")
+            self.current_bidder_label.config(text="")
+            self.latest_bin_assignment = "Waiting for bidder..."
+            self.socketio.emit('update', {'data': self.latest_bin_assignment})
+            self.show_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.bidder_csv_path = os.path.join(log_dir, f"bidder_history_{self.show_id}.csv")
+            self.update_bin_display()
+            self.update_top_buyers()
+            self.update_stats()
+            self.show_avg_sell_rate(show_message=False)
+            self.announcement_text.config(state="normal")
+            self.announcement_text.delete("1.0", tk.END)
+            self.announcement_text.config(state="disabled")
+            if self.bot and self.chat_id:
+                asyncio.run_coroutine_threadsafe(
+                    self.bot.send_message(self.chat_id, f"New show: {self.show_id}"),
+                    loop
+                )
+            messagebox.showinfo("Info", f"New show: {self.show_id}")
+            self.update_footer()
+            logging.info(f"Started new show: {self.show_id}")
+
+    def search_bidders(self):
+        q = self.search_entry.get().strip().lower()
+        if not q:
+            self.search_result.config(text="Enter query!")
+            logging.warning("Search bidders: Empty query")
+            return
+        if q in self.bidders:
+            data = self.bidders[q]
+            display_username = data.get('original_username', q)
+            self.search_result.config(
+                text=f"Username: {display_username} | Bin: {data['bin']} | Items: {data['total_items']}")
+            logging.info(f"Search bidders: Found {display_username}")
+            return
+        res = []
+        for username, data in self.bidders.items():
+            display_username = data.get('original_username', username)
+            for t in data['transactions']:
+                if q in username or q in str(t['qty']) or q in t['weight'].lower():
+                    res.append(
+                        f"{display_username} | Bin {data['bin']} | {t['qty']}x | {t['weight']} | # {t['giveaway_num']} | {t['timestamp']}")
+        self.search_result.config(text='\n'.join(res) if res else 'No matches!')
+        logging.info(f"Search bidders: {'Found matches' if res else 'No matches'}")
+
+    def set_sort_order(self, order):
+        logging.info(f"Sort button clicked: Setting to {order}")
+        self.sort_order = order
+        self.update_treeview()
+        self.tree.update()
+        self.root.update()
+        logging.info(f"Sort order set to {order}, treeview updated")
+
+    def update_treeview(self):
+        logging.info("Updating treeview")
+        try:
+            self.tree.delete(*self.tree.get_children())
+            transactions = []
+            for username, data in self.bidders.items():
+                display_username = data.get('original_username', username)
+                for t in data['transactions']:
+                    transactions.append({
+                        'username': username,
+                        'display_username': display_username,
+                        'bin': data['bin'],
+                        'txn': t
+                    })
+            logging.info(f"Collected {len(transactions)} transactions")
+
+            if not transactions:
+                logging.info("No transactions to display")
+                return
+
+            valid_transactions = []
+            for t in transactions:
+                try:
+                    datetime.datetime.strptime(t['txn']['timestamp'], "%Y-%m-%d %I:%M:%S %p")
+                    valid_transactions.append(t)
+                    logging.debug(f"Valid: {t['display_username']}, Timestamp: {t['txn']['timestamp']}")
+                except ValueError:
+                    logging.warning(f"Invalid timestamp: {t['display_username']}, {t['txn']['timestamp']}")
+
+            sorted_transactions = valid_transactions
+            if valid_transactions:
+                sorted_transactions = sorted(
+                    valid_transactions,
+                    key=lambda x: datetime.datetime.strptime(
+                        x['txn']['timestamp'], "%Y-%m-%d %I:%M:%S %p"),
+                    reverse=(self.sort_order == 'desc')
+                )
+                logging.info(f"Sorted {len(sorted_transactions)} transactions in {self.sort_order} order")
+            else:
+                logging.warning("No valid timestamps to sort")
+
+            user_parents = {}
+            for t in sorted_transactions:
+                username = t['username']
+                data = t['txn']
+                display_username = t['display_username']
+                if username not in user_parents:
+                    parent = self.tree.insert('', 'end', text='+', open=False, values=(
+                        display_username,
+                        t['bin'],
+                        data['qty'],
+                        data['weight'],
+                        'Yes' if data['giveaway'] else 'No',
+                        data['giveaway_num'],
+                        data['timestamp']
+                    ))
+                    user_parents[username] = parent
+                    logging.debug(f"Parent: {display_username}, {data['timestamp']}")
+                else:
+                    self.tree.insert(user_parents[username], 'end', values=(
+                        '',
+                        t['bin'],
+                        data['qty'],
+                        data['weight'],
+                        'Yes' if data['giveaway'] else 'No',
+                        data['giveaway_num'],
+                        data['timestamp']
+                    ))
+                    logging.debug(f"Child: {display_username}, {data['timestamp']}")
+
+            def on_click(e):
+                region = self.tree.identify_region(e.x, e.y)
+                if region == 'tree':
+                    iid = self.tree.identify_row(e.y)
+                    if iid:
+                        self.tree.item(iid, open=not self.tree.item(iid, 'open'))
+                        logging.debug(f"Toggled item: {iid}")
+
+            self.tree.bind('<ButtonRelease-1>', on_click)
+            logging.info(f"Treeview updated with sort order: {self.sort_order}")
+        except Exception as e:
+            logging.error(f"Treeview update failed: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update treeview: {str(e)}")
+
+    def print_bidders(self):
+        if not self.bidders:
+            messagebox.showinfo("Info", "No bidders to export.")
+            logging.info("Export bidders: No bidders")
+            return
+        csv_columns = [
+            "username",
+            "bin",
+            "qty",
+            "weight",
+            "giveaway",
+            "giveaway_num",
+            "timestamp"]
+        try:
+            os.makedirs(os.path.dirname(self.bidder_csv_path), exist_ok=True)
+            with open(self.bidder_csv_path, mode="a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=csv_columns)
+                if os.path.getsize(self.bidder_csv_path) == 0:
+                    writer.writeheader()
+                for username, data in self.bidders.items():
+                    display_username = data.get('original_username', username)
+                    for t in data["transactions"]:
+                        writer.writerow({
+                            "username": display_username,
+                            "bin": data["bin"],
+                            "qty": t["qty"],
+                            "weight": t["weight"],
+                            "giveaway": "Yes" if t["giveaway"] else "No",
+                            "giveaway_num": t["giveaway_num"] if t["giveaway"] else "",
+                            "timestamp": t["timestamp"]
+                        })
+            messagebox.showinfo("Success", f"Data appended to {self.bidder_csv_path}")
+            logging.info(f"Bidders exported to {self.bidder_csv_path}")
+        except Exception as e:
+            logging.error(f"Bidders export failed: {str(e)}")
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+
+    def save_auction_history(self):
+        if not self.bidders:
+            logging.info("Save auction history: No bidders")
+            return
+        csv_path = os.path.join(log_dir, f"auction_history_{self.show_id}.csv")
+        try:
+            os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+            with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=["show_id", "start_time", "end_time", "total_bidders", "total_transactions"])
+                writer.writeheader()
+                writer.writerow({
+                    "show_id": self.show_id,
+                    "start_time": self.show_start_time,
+                    "end_time": datetime.datetime.now().strftime("%Y-%m-%d %I:%M:%S %p"),
+                    "total_bidders": len(self.bidders),
+                    "total_transactions": sum(len(data["transactions"]) for data in self.bidders.values())
+                })
+            logging.info(f"Auction history saved to {csv_path}")
+        except Exception as e:
+            logging.error(f"Auction history save failed: {str(e)}")
+            messagebox.showerror("Error", f"Save failed: {str(e)}")
+
+if __name__ == '__main__':
+    root = tk.Tk()
+    app = SCDWhatnotGUI(root)
+    root.mainloop()

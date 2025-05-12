@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SwiftSale Display</title>
+</head>
+<body>
+    <h1>Latest Bin Assignment</h1>
+    <p id="data">Waiting for bidder...</p>
+
+    <!-- Use the same-version Socket.IO client; this will auto-connect over HTTP or HTTPS -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.min.js"></script>
+    <script>
+        // Default io() will connect back to this origin
+        const socket = io();
+
+        socket.on('connect', () => {
+            console.log('Connected to WebSocket server');
+        });
+
+        socket.on('update', (msg) => {
+            console.log('Received update:', msg);
+            document.getElementById('data').innerText = msg.data;
+        });
+
+        socket.on('connect_error', (err) => {
+            console.error('WebSocket connection error:', err);
+        });
+    </script>
+</body>
+</html>

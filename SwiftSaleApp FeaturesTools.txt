@@ -1,0 +1,17 @@
+SwiftSaleApp Features/Tools
+Real-Time Bin Assignment- Automatically assigns bin numbers to each unique bidder in real time. Assigned bins remain tied to their usernames for the entire show regardless of how many purchases made or time of purchase. Resulting in each bidders items being boxed and ready for easy shipping or local pickup post show.  
+Smart Label Printing
+Live Show Analytics- Tracks sell rates (e.g., 1.1 items/buyer) and top 3 buyers in real time to boost engagement. 
+Top Buyer Insights- Top 3 buyers are always visible with predefined message to Engage Bidders in the Chat Window.
+Real-Time Telegram Alerts- Auto push Bin numbers remotely to a sellers display in real time for item marking.
+Bidder  Management- Copy and auto paste each winning bidder into the username field to auto assign bins in real time and in chronological order. (1-25: Trial), (1-50: Bronze), (1-150: Silver), 1-300: Gold) 
+Label Customization- At the end of the show, order bin numbers/username in ascending or descending order to match Whatnot shipping, packing & local pickup labels. 
+Giveaway & Flash sale Tools- Keep track of giveaway's(optional) by copying and auto pasting into username field, check giveaway box to auto assign unique giveaway id's(ex. #1, #2, #3, etc.) Copy and paste pre-defined Giveaway messages into the chat window. Flash Sales as well. 
+Data Export & Import- Easily imports Data for seamless workflow integration. Import previous shows using the exported csv file to instantly rebuild a past show. 
+Smart Flash Sale- Auto copy predefined flash sale message for quick chat promotions during live show. 
+Bin Range Customization- Support up to 25 bins (Trial), 50 (Bronze), 150 (Silver) and 300 (Gold)
+Timestamp Tracking- Logs every transaction with timestamps for accurate records. Sort by timestamp post show to match Whatnot's printing process (Print ascending or descending by purchase time)
+Search & Filter- Quickly searches buyers and filters by quantity, weight or bin number for efficient management.
+Real- Time seller rate- Tracks your sellers speed rate. (e.g., seconds per item) in real time to optimize show efficiency. 
+Clear Data Option- Resets data quickly between shows to keep your dashboard organized. 
+Printer Guide- Provides a built-in guide for printer setup, ensuring smooth label printing. 
