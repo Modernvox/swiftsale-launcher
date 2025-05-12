@@ -1,1 +1,2 @@
-web: gunicorn swiftsaleapp:app -k eventlet
+web: gunicorn oauth_callback:app
+
