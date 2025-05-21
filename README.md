@@ -1,2 +1,2 @@
-# swiftsale-launcher
-SwiftSale Launcher Windows binary
+"# SwiftSale Launcher" 
+"Standalone Windows EXE for automating Whatnot sales bins." 
