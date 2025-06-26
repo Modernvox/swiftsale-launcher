@@ -1,4 +1,5 @@
 {
-  "version": "3.0",
-  "download_url": "https://github.com/Modernvox/swiftsale-launcher/releases/latest"
+  "version": "3.1",
+  "download_url": "https://github.com/Modernvox/swiftsale-launcher/releases/latest",
+  "notes": "🔧 Fixes subscription bug\n✅ Adds BIN stats viewer\n🧪 Improved update checker"
 }
